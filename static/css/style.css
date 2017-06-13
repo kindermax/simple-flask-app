@@ -1,0 +1,21 @@
+.container {
+    width: 800px;
+    margin-top: 20px;
+}
+
+.btn {
+    width: 100%;
+}
+
+#save:hover {
+    border-color: #28f0a5;
+}
+
+#delete:hover {
+    border-color: #f06292;
+}
+
+.winners {
+    display: none;
+    text-align: center;
+}

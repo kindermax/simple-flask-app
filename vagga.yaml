@@ -1,0 +1,158 @@
+containers:
+  base:
+    setup:
+      - !Ubuntu xenial
+      - !UbuntuUniverse
+      - !Install
+        - python3
+        - python3-setuptools
+        - git
+
+  nodejs:
+    setup:
+      - !Container base
+      - !Install [nodejs]
+      - !Sh ln -s /usr/bin/nodejs /usr/bin/node
+      - !NpmInstall [webpack]
+      - !Sh npm install && npm install --dev
+
+  flask:
+    setup:
+    - !Container base
+    - !Py3Requirements "requirements.txt"
+
+  postgres:
+    setup:
+    - !Container base
+    - !Sh |
+        addgroup --system --gid 200 postgres
+        adduser --uid 200 --system --home /data --no-create-home \
+            --shell /bin/bash --group --gecos "PostgreSQL administrator" \
+            postgres
+    - !Install [postgresql-9.5]
+    - !EnsureDir /data
+    environ:
+      PG_PORT: 5432   # Port of host to use
+      PG_DB: persons_db
+      PGDATA: /data
+      PG_BIN: /usr/lib/postgresql/9.5/bin
+    volumes:
+      /data: !Persistent
+        name: postgres
+        owner-uid: 200
+        owner-gid: 200
+        init-command: _pg-init
+      /run: !Tmpfs
+        subdirs:
+          postgresql: { mode: 0o777 }  # until we have user, group options
+
+  postgres-test:
+    setup:
+    - !Container base
+    - !Sh |
+        addgroup --system --gid 200 postgres
+        adduser --uid 200 --system --home /data --no-create-home \
+            --shell /bin/bash --group --gecos "PostgreSQL administrator" \
+            postgres
+    - !Install [postgresql-9.5]
+    - !EnsureDir /data
+    environ:
+      PG_PORT: 5432   # Port of host to use
+      PG_DB: persons_db
+      PGDATA: /data
+      PG_BIN: /usr/lib/postgresql/9.5/bin
+    volumes:
+      /data: !Persistent
+        name: postgres
+        owner-uid: 200
+        owner-gid: 200
+        init-command: _pg-test-init
+      /run: !Tmpfs
+        subdirs:
+          postgresql: { mode: 0o777 }  # until we have user, group options
+
+commands:
+
+  _pg-init: &pg-init !Command
+    description: Init postgres database
+    container: postgres
+    user-id: 200
+    group-id: 200
+    run: |
+      set -ex
+      ls -la /data
+      $PG_BIN/pg_ctl initdb
+      $PG_BIN/pg_ctl -w -o '-F --port=$PG_PORT -k /tmp' start
+      $PG_BIN/createuser -h 127.0.0.1 -p $PG_PORT test_user
+      $PG_BIN/createdb -h 127.0.0.1 -p $PG_PORT $PG_DB -O test_user
+
+      $PG_BIN/pg_ctl stop
+
+  _pg-test-init: &pg-test-init !Command
+    description: Init postgres database
+    container: postgres-test
+    user-id: 200
+    group-id: 200
+    run: |
+      set -ex
+      ls -la /data
+      $PG_BIN/pg_ctl initdb
+      $PG_BIN/pg_ctl -w -o '-F --port=$PG_PORT -k /tmp' start
+      $PG_BIN/createuser -h 127.0.0.1 -p $PG_PORT test_user
+      $PG_BIN/createdb -h 127.0.0.1 -p $PG_PORT $PG_DB -O test_user
+
+      $PG_BIN/pg_ctl stop
+
+  postgres: &postgres !Command
+    description: Run postgres database
+    container: postgres
+    user-id: 200
+    group-id: 200
+    run: |
+      trap "$PG_BIN/pg_ctl -w stop; trap - INT; kill -INT $$" INT
+      $PG_BIN/pg_ctl -w -o '-F --port=$PG_PORT -k /tmp' start
+      sleep infinity
+
+  _postgres-test: &postgres-test !Command
+    description: Run postgres test database
+    container: postgres-test
+    user-id: 200
+    group-id: 200
+    run: |
+      trap "$PG_BIN/pg_ctl -w stop; trap - INT; kill -INT $$" INT
+      $PG_BIN/pg_ctl -w -o '-F --port=$PG_PORT -k /tmp' start
+      sleep infinity
+
+  psql: &psql !Command
+    description: Run postgres shell
+    container: postgres
+    run: |
+      psql -U test_user postgres://$PG_USER:$PG_PASSWORD@127.0.0.1:$PG_PORT/$PG_DB
+
+  static-build: &static-build !Command
+    description: Run build of webpack
+    container: nodejs
+    run: |
+      webpack
+
+  static-watch: !Command
+    description: Run build of webpack and watch for changes
+    container: nodejs
+    run: |
+      webpack --watch --color
+
+  run: !Supervise
+    description: Run project
+    children:
+      postgres: *postgres
+      flask: !Command
+        container: flask
+        run: "gunicorn -b 127.0.0.1:8000 application:app"
+
+  test: !Supervise
+    description: Run unit tests for project
+    children:
+      postgres-test: *postgres-test
+      flask: !Command
+        container: flask
+        run: "python3 -m unittest"
